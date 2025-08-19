@@ -1,0 +1,80 @@
+# RunPod Configuration for SigLIP 2 Deployment
+
+name: siglip2-so400m-deployment
+description: "SigLIP 2 So400m model deployment for image classification and embedding extraction"
+
+# Docker configuration
+docker:
+  image: "algonum1/siglip2-runpod:latest"
+  dockerfile: "./Dockerfile"
+  
+# Resource requirements
+resources:
+  gpu:
+    type: "NVIDIA_RTX_A6000"  # or "NVIDIA_A100" for better performance
+    count: 1
+  cpu:
+    cores: 4
+  memory:
+    size: "16GB"
+  storage:
+    size: "50GB"
+
+# Environment variables
+environment:
+  TRANSFORMERS_CACHE: "/runpod-volume/.cache/huggingface"
+  HF_HOME: "/runpod-volume/.cache/huggingface"
+  TORCH_HOME: "/runpod-volume/.cache/torch"
+  CUDA_VISIBLE_DEVICES: "0"
+
+# Serverless configuration
+serverless:
+  handler: "runpod_handler.py"
+  max_workers: 1
+  idle_timeout: 300  # 5 minutes
+  execution_timeout: 120  # 2 minutes
+  
+# Endpoints
+endpoints:
+  - name: "classify"
+    description: "Classify images with custom labels"
+    input_schema:
+      type: "object"
+      properties:
+        task:
+          type: "string"
+          default: "classify"
+        image_url:
+          type: "string"
+          description: "URL of the image to classify"
+        image_base64:
+          type: "string"
+          description: "Base64 encoded image"
+        labels:
+          type: "string"
+          default: "cat,dog,car,plane,person"
+          description: "Comma-separated list of labels"
+      required: ["task"]
+      
+  - name: "embed"
+    description: "Extract image embeddings"
+    input_schema:
+      type: "object"
+      properties:
+        task:
+          type: "string"
+          default: "embed"
+        image_url:
+          type: "string"
+          description: "URL of the image to embed"
+        image_base64:
+          type: "string"
+          description: "Base64 encoded image"
+      required: ["task"]
+
+# Health check
+health_check:
+  endpoint: "/health"
+  interval: 30
+  timeout: 10
+  retries: 3
