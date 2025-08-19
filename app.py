@@ -55,14 +55,8 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Detailed health check"""
-    return {
-        "status": "healthy",
-        "model_loaded": model is not None,
-        "processor_loaded": processor is not None,
-        "cuda_available": torch.cuda.is_available(),
-        "device": str(next(model.parameters()).device) if model else "N/A"
-    }
+    """Health check endpoint for monitoring and CI/CD"""
+    return {"status": "healthy", "model": "SigLIP-2"}
 
 @app.post("/classify")
 async def classify_image(
