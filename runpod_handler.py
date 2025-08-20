@@ -40,6 +40,8 @@ def load_model():
         # Move to GPU if available
         if torch.cuda.is_available():
             model = model.cuda()
+            # Clear cache after loading
+            torch.cuda.empty_cache()
         
         logger.info(f"Model loaded successfully on device: {next(model.parameters()).device}")
         return True
@@ -151,7 +153,11 @@ def classify_image(image, labels):
         
     except Exception as e:
         logger.error(f"Classification error: {str(e)}")
-        raise e
+        # Clean up on error
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        return {"error": f"Classification failed: {str(e)}"}
 
 def get_image_embeddings(image):
     """Get image embeddings - optimized"""
@@ -186,7 +192,11 @@ def get_image_embeddings(image):
         
     except Exception as e:
         logger.error(f"Embedding error: {str(e)}")
-        return {"error": str(e)}
+        # Clean up on error
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        return {"error": f"Embedding failed: {str(e)}"}
 
 def handler(job):
     """RunPod handler function with optimizations"""
