@@ -42,20 +42,28 @@ def load_model():
         dummy_inputs = processor(images=[dummy_image], text=["test"], return_tensors="pt", padding=True)
         
         if torch.cuda.is_available():
-            dummy_inputs = dummy_inputs.to(model.device)
+            dummy_inputs = {k: v.to(model.device) for k, v in dummy_inputs.items()}
         
         with torch.no_grad():
             _ = model(**dummy_inputs)
         
+        # Clean up dummy data
+        del dummy_image, dummy_inputs
+        
         # Clear cache
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        gc.collect()
         
         logger.info(f"Model loaded and warmed up successfully on device: {next(model.parameters()).device}")
         return True
         
     except Exception as e:
         logger.error(f"Failed to load model: {str(e)}")
+        # Clean up on failure
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
         return False
 
 def load_image_from_url(image_url):
@@ -265,9 +273,12 @@ def get_status():
 if __name__ == "__main__":
     # Initialize model on startup with retry
     max_retries = 3
+    model_loaded = False
+    
     for attempt in range(max_retries):
         if load_model():
             logger.info(f"Model loaded successfully on attempt {attempt + 1}")
+            model_loaded = True
             break
         else:
             logger.warning(f"Failed to load model on attempt {attempt + 1}")
@@ -275,9 +286,10 @@ if __name__ == "__main__":
                 logger.info("Retrying in 5 seconds...")
                 import time
                 time.sleep(5)
-            else:
-                logger.error("Failed to load model after all retries")
-                exit(1)
+    
+    if not model_loaded:
+        logger.error("Failed to load model after all retries")
+        raise Exception("Model initialization failed")
 
     # Start the RunPod serverless function
     runpod.serverless.start({"handler": handler})
