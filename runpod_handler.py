@@ -23,7 +23,7 @@ def load_model():
     
     try:
         logger.info("Loading SigLIP 2 model...")
-        model_name = "google/siglip2-so400m-patch14-384"
+        model_name = "google/siglip-so400m-patch14-384"
         
         # Load processor first (faster)
         logger.info("Loading processor...")
