@@ -25,37 +25,23 @@ def load_model():
         logger.info("Loading SigLIP 2 model...")
         model_name = "google/siglip2-so400m-patch14-384"
         
-        # Load model and processor with optimizations
-        model = AutoModel.from_pretrained(
-            model_name,
-            device_map="auto",
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            low_cpu_mem_usage=True,
-            use_safetensors=True
-        ).eval()
-        
+        # Load processor first (faster)
+        logger.info("Loading processor...")
         processor = AutoProcessor.from_pretrained(model_name)
         
-        # Warm up the model with a dummy input
-        logger.info("Warming up model...")
-        dummy_image = Image.new('RGB', (384, 384), color='white')
-        dummy_inputs = processor(images=[dummy_image], text=["test"], return_tensors="pt", padding=True)
+        # Load model with basic optimizations
+        logger.info("Loading model...")
+        model = AutoModel.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            low_cpu_mem_usage=True
+        ).eval()
         
+        # Move to GPU if available
         if torch.cuda.is_available():
-            dummy_inputs = {k: v.to(model.device) for k, v in dummy_inputs.items()}
+            model = model.cuda()
         
-        with torch.no_grad():
-            _ = model(**dummy_inputs)
-        
-        # Clean up dummy data
-        del dummy_image, dummy_inputs
-        
-        # Clear cache
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
-        
-        logger.info(f"Model loaded and warmed up successfully on device: {next(model.parameters()).device}")
+        logger.info(f"Model loaded successfully on device: {next(model.parameters()).device}")
         return True
         
     except Exception as e:
