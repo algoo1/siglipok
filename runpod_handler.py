@@ -2,10 +2,12 @@ import runpod
 import torch
 import base64
 import io
+import requests
 from PIL import Image
 from transformers import AutoModel, AutoProcessor
 from transformers.image_utils import load_image
 import logging
+import gc
 import json
 
 # Configure logging
@@ -17,76 +19,137 @@ model = None
 processor = None
 
 def load_model():
-    """Load the SigLIP 2 model and processor"""
+    """Load the SigLIP 2 model and processor with optimizations"""
     global model, processor
     
     try:
         logger.info("Loading SigLIP 2 model...")
         model_name = "google/siglip2-so400m-patch14-384"
         
-        # Load model and processor
+        # Load model and processor with optimizations
         model = AutoModel.from_pretrained(
             model_name,
             device_map="auto",
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            low_cpu_mem_usage=True,
+            use_safetensors=True
         ).eval()
         
         processor = AutoProcessor.from_pretrained(model_name)
         
-        logger.info(f"Model loaded successfully on device: {next(model.parameters()).device}")
+        # Warm up the model with a dummy input
+        logger.info("Warming up model...")
+        dummy_image = Image.new('RGB', (384, 384), color='white')
+        dummy_inputs = processor(images=[dummy_image], text=["test"], return_tensors="pt", padding=True)
+        
+        if torch.cuda.is_available():
+            dummy_inputs = dummy_inputs.to(model.device)
+        
+        with torch.no_grad():
+            _ = model(**dummy_inputs)
+        
+        # Clear cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        logger.info(f"Model loaded and warmed up successfully on device: {next(model.parameters()).device}")
         return True
         
     except Exception as e:
         logger.error(f"Failed to load model: {str(e)}")
         return False
 
+def load_image_from_url(image_url):
+    """Load image from URL - optimized"""
+    try:
+        response = requests.get(image_url, timeout=30, stream=True)
+        response.raise_for_status()
+        
+        # Load image with memory optimization
+        image = Image.open(io.BytesIO(response.content))
+        rgb_image = image.convert("RGB")
+        
+        # Clean up
+        image.close()
+        del response
+        gc.collect()
+        
+        return rgb_image
+    except Exception as e:
+        logger.error(f"Failed to load image from URL: {str(e)}")
+        return None
+
 def decode_base64_image(base64_string):
-    """Decode base64 image string to PIL Image"""
+    """Decode base64 image - optimized"""
     try:
         # Remove data URL prefix if present
         if base64_string.startswith('data:image'):
             base64_string = base64_string.split(',')[1]
         
+        # Decode with memory optimization
         image_data = base64.b64decode(base64_string)
-        image = Image.open(io.BytesIO(image_data)).convert('RGB')
-        return image
+        image = Image.open(io.BytesIO(image_data))
+        rgb_image = image.convert('RGB')
+        
+        # Clean up
+        image.close()
+        del image_data
+        gc.collect()
+        
+        return rgb_image
     except Exception as e:
         logger.error(f"Failed to decode base64 image: {str(e)}")
         return None
 
 def classify_image(image, labels):
-    """Classify image with given labels"""
+    """Classify image with given labels - optimized"""
     try:
-        # Parse labels
+        # Parse labels efficiently
         if isinstance(labels, str):
-            candidate_labels = [label.strip() for label in labels.split(',')]
+            candidate_labels = [label.strip() for label in labels.split(',') if label.strip()]
         else:
-            candidate_labels = labels
+            candidate_labels = [label for label in labels if label]
         
-        # Process image
+        if not candidate_labels:
+            return {"error": "No valid labels provided"}
+        
+        # Process image with memory optimization
         inputs = processor(
             images=[image],
             text=candidate_labels,
             return_tensors="pt",
             padding=True
-        ).to(model.device)
+        )
         
-        # Run inference
+        # Move to device efficiently
+        if torch.cuda.is_available():
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        else:
+            inputs = inputs.to(model.device)
+        
+        # Run inference with memory efficiency
         with torch.no_grad():
             outputs = model(**inputs)
             logits_per_image = outputs.logits_per_image
             probs = torch.softmax(logits_per_image, dim=-1)
+            
+            # Convert to CPU immediately to free GPU memory
+            probs_cpu = probs.cpu().numpy()
         
-        # Format results
-        results = []
-        for i, label in enumerate(candidate_labels):
-            results.append({
+        # Format results efficiently
+        results = [
+            {
                 "label": label,
-                "score": float(probs[0][i])
-            })
+                "score": float(probs_cpu[0][i])
+            }
+            for i, label in enumerate(candidate_labels)
+        ]
         
         # Sort by score
         results.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Clean up tensors
+        del inputs, outputs, logits_per_image, probs, probs_cpu
         
         return {
             "predictions": results,
@@ -98,38 +161,54 @@ def classify_image(image, labels):
         raise e
 
 def get_image_embeddings(image):
-    """Get image embeddings from the vision encoder"""
+    """Get image embeddings - optimized"""
     try:
-        # Process image
-        inputs = processor(images=[image], return_tensors="pt").to(model.device)
+        # Process image with memory optimization
+        inputs = processor(images=[image], return_tensors="pt")
         
-        # Get embeddings
+        # Move to device efficiently
+        if torch.cuda.is_available():
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        else:
+            inputs = inputs.to(model.device)
+        
+        # Get embeddings with memory efficiency
         with torch.no_grad():
-            image_embeddings = model.get_image_features(**inputs)
+            image_features = model.get_image_features(**inputs)
+            # Normalize embeddings
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            
+            # Convert to CPU immediately
+            embeddings_cpu = image_features.cpu().numpy()
+            shape = list(image_features.shape)
         
-        # Convert to list for JSON serialization
-        embeddings_list = image_embeddings.cpu().numpy().tolist()
+        # Clean up tensors
+        del inputs, image_features
         
         return {
-            "embeddings": embeddings_list,
-            "shape": list(image_embeddings.shape),
-            "dtype": str(image_embeddings.dtype)
+            "task": "embed",
+            "embeddings": embeddings_cpu.tolist(),
+            "shape": shape
         }
         
     except Exception as e:
         logger.error(f"Embedding error: {str(e)}")
-        raise e
+        return {"error": str(e)}
 
 def handler(job):
-    """RunPod handler function"""
+    """RunPod handler function with optimizations"""
     try:
+        # Quick validation
+        if not job or "input" not in job:
+            return {"error": "Invalid job format"}
+            
         job_input = job["input"]
         task_type = job_input.get("task", "classify")
         
-        # Load image
+        # Load image efficiently
         image = None
         if "image_url" in job_input:
-            image = load_image(job_input["image_url"])
+            image = load_image_from_url(job_input["image_url"])
         elif "image_base64" in job_input:
             image = decode_base64_image(job_input["image_base64"])
         else:
@@ -139,27 +218,67 @@ def handler(job):
             return {"error": "Failed to load image"}
         
         # Process based on task type
+        result = None
         if task_type == "classify":
             labels = job_input.get("labels", "cat,dog,car,plane,person")
             result = classify_image(image, labels)
-            return result
             
-        elif task_type == "embed":
+        elif task_type == "embed" or task_type == "embed_image":
             result = get_image_embeddings(image)
-            return result
             
         else:
-            return {"error": f"Unknown task type: {task_type}"}
+            return {"error": f"Unknown task type: {task_type}. Use 'classify' or 'embed'"}
+        
+        # Clean up memory
+        del image
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        return result
             
     except Exception as e:
         logger.error(f"Handler error: {str(e)}")
+        # Clean up on error
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return {"error": str(e)}
+
+def get_status():
+    """Get model status and memory info"""
+    try:
+        status = {
+            "model_loaded": model is not None,
+            "processor_loaded": processor is not None,
+            "device": str(next(model.parameters()).device) if model else "unknown"
+        }
+        
+        if torch.cuda.is_available():
+            status.update({
+                "gpu_memory_allocated": torch.cuda.memory_allocated(),
+                "gpu_memory_cached": torch.cuda.memory_reserved(),
+                "gpu_memory_free": torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()
+            })
+        
+        return status
+    except Exception as e:
         return {"error": str(e)}
 
 if __name__ == "__main__":
-    # Load model on startup
-    if load_model():
-        logger.info("Starting RunPod serverless handler...")
-        runpod.serverless.start({"handler": handler})
-    else:
-        logger.error("Failed to load model, exiting...")
-        exit(1)
+    # Initialize model on startup with retry
+    max_retries = 3
+    for attempt in range(max_retries):
+        if load_model():
+            logger.info(f"Model loaded successfully on attempt {attempt + 1}")
+            break
+        else:
+            logger.warning(f"Failed to load model on attempt {attempt + 1}")
+            if attempt < max_retries - 1:
+                logger.info("Retrying in 5 seconds...")
+                import time
+                time.sleep(5)
+            else:
+                logger.error("Failed to load model after all retries")
+                exit(1)
+
+    # Start the RunPod serverless function
+    runpod.serverless.start({"handler": handler})
