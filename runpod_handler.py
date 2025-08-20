@@ -204,8 +204,10 @@ def handler(job):
             image = load_image_from_url(job_input["image_url"])
         elif "image_base64" in job_input:
             image = decode_base64_image(job_input["image_base64"])
+        elif "image_data" in job_input:
+            image = decode_base64_image(job_input["image_data"])
         else:
-            return {"error": "No image provided. Use 'image_url' or 'image_base64'"}
+            return {"error": "No image provided. Use 'image_url', 'image_base64', or 'image_data'"}
         
         if image is None:
             return {"error": "Failed to load image"}
