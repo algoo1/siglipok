@@ -19,13 +19,22 @@ processor = None
 
 def load_model():
     global model, processor
-    max_retries = 3
+    max_retries = 5
     model_name = "google/siglip-base-patch16-224"
+    
+    logger.info(f"Starting model loading process. CUDA available: {torch.cuda.is_available()}")
     
     for attempt in range(max_retries):
         try:
             logger.info(f"Loading model attempt {attempt + 1}/{max_retries}")
+            
+            # Load processor first
+            logger.info("Loading processor...")
             processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+            logger.info("Processor loaded successfully")
+            
+            # Load model
+            logger.info("Loading model...")
             model = AutoModel.from_pretrained(
                 model_name,
                 torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
@@ -34,18 +43,26 @@ def load_model():
             ).eval()
             
             if torch.cuda.is_available():
+                logger.info("Moving model to GPU...")
                 model = model.cuda()
                 torch.cuda.empty_cache()
+                logger.info(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
             
             logger.info(f"Model loaded successfully on {next(model.parameters()).device}")
             return True
+            
         except Exception as e:
-            logger.error(f"Attempt {attempt + 1} failed: {e}")
+            logger.error(f"Attempt {attempt + 1} failed: {e}", exc_info=True)
+            
+            # Cleanup on failure
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
+            
             if attempt < max_retries - 1:
-                time.sleep(5)
+                wait_time = (attempt + 1) * 10  # Exponential backoff
+                logger.info(f"Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
             else:
                 logger.error("All model loading attempts failed")
                 return False
@@ -117,11 +134,20 @@ def get_image_embeddings(image):
 
 def handler(job):
     try:
+        logger.info(f"Processing job: {job.get('id', 'unknown')}")
+        
+        # Check if model is loaded
+        if model is None or processor is None:
+            logger.error("Model or processor not loaded")
+            return {"error": "Model not initialized. Please wait for model loading to complete."}
+        
         if not job or "input" not in job:
+            logger.error("Invalid job format received")
             return {"error": "Invalid job format"}
             
         job_input = job["input"]
         task_type = job_input.get("task", "classify")
+        logger.info(f"Task type: {task_type}")
         
         image = None
         if "image_url" in job_input:
@@ -145,14 +171,15 @@ def handler(job):
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            
+        
+        logger.info(f"Job completed successfully with task: {task_type}")
         return result
             
     except Exception as e:
-        logger.error(f"Handler error: {e}")
+        logger.error(f"Handler error: {e}", exc_info=True)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return {"error": str(e)}
+        return {"error": f"Processing failed: {str(e)}"}
 
 def get_status():
     try:

@@ -18,9 +18,10 @@ environment:
   CUDA_VISIBLE_DEVICES: "0"
 serverless:
   handler: "runpod_handler.py"
-  max_workers: 1
-  idle_timeout: 300
-  execution_timeout: 120
+  max_workers: 2
+  idle_timeout: 600
+  execution_timeout: 300
+  startup_timeout: 600
 endpoints:
   - name: "classify"
     input_schema:
